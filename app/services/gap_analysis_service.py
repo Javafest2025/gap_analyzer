@@ -94,13 +94,13 @@ class GapAnalysisService:
                 # Return a response indicating no gaps were found
                 await self._mark_analysis_completed(analysis, 0, 0, 0, 0, session)
                 return GapAnalysisResponse(
-                    request_id=request.requestId,
-                    correlation_id=request.correlationId,
+                    requestId=request.requestId,
+                    correlationId=request.correlationId,
                     status="COMPLETED",
                     message="Analysis completed - no research gaps identified",
-                    gap_analysis_id=str(analysis.id),
-                    total_gaps=0,
-                    valid_gaps=0,
+                    gapAnalysisId=str(analysis.id),
+                    totalGaps=0,
+                    validGaps=0,
                     gaps=[]
                 )
             logger.info(f"Generated {len(initial_gaps)} initial gaps")
@@ -171,8 +171,8 @@ class GapAnalysisService:
                     logger.error(f"Failed to mark analysis as failed: {mark_error}")
             
             return GapAnalysisResponse(
-                request_id=request.requestId,
-                correlation_id=request.correlationId,
+                requestId=request.requestId,
+                correlationId=request.correlationId,
                 status="FAILED",
                 message=f"Analysis failed: {str(e)}",
                 error=str(e)
@@ -604,36 +604,36 @@ class GapAnalysisService:
         
         for gap_data in valid_gap_data:
             gap_detail = GapDetail(
-                gap_id=gap_data['gap_id'],
+                gapId=gap_data['gap_id'],
                 name=gap_data['name'],
                 description=gap_data['description'],
                 category=gap_data['category'],
-                validation_status=gap_data['validation_status'],
-                confidence_score=gap_data['confidence_score'],
-                potential_impact=gap_data.get('potential_impact'),
-                research_hints=gap_data.get('research_hints'),
-                implementation_suggestions=gap_data.get('implementation_suggestions'),
-                risks_and_challenges=gap_data.get('risks_and_challenges'),
-                required_resources=gap_data.get('required_resources'),
-                estimated_difficulty=gap_data.get('estimated_difficulty'),
-                estimated_timeline=gap_data.get('estimated_timeline'),
-                evidence_anchors=gap_data.get('evidence_anchors', []),
-                supporting_papers_count=0,
-                conflicting_papers_count=0,
-                suggested_topics=gap_data.get('suggested_topics', [])
+                validationStatus=gap_data['validation_status'],
+                confidenceScore=gap_data['confidence_score'],
+                potentialImpact=gap_data.get('potential_impact'),
+                researchHints=gap_data.get('research_hints'),
+                implementationSuggestions=gap_data.get('implementation_suggestions'),
+                risksAndChallenges=gap_data.get('risks_and_challenges'),
+                requiredResources=gap_data.get('required_resources'),
+                estimatedDifficulty=gap_data.get('estimated_difficulty'),
+                estimatedTimeline=gap_data.get('estimated_timeline'),
+                evidenceAnchors=gap_data.get('evidence_anchors', []),
+                supportingPapersCount=0,
+                conflictingPapersCount=0,
+                suggestedTopics=gap_data.get('suggested_topics', [])
             )
             gap_details.append(gap_detail)
         
         return GapAnalysisResponse(
-            request_id=analysis.request_id,
-            correlation_id=analysis.correlation_id,
+            requestId=analysis.request_id,
+            correlationId=analysis.correlation_id,
             status="SUCCESS",
             message=f"Successfully identified {len(valid_gap_data)} valid research gaps",
-            gap_analysis_id=str(analysis.id),
-            total_gaps=analysis.total_gaps_identified,
-            valid_gaps=analysis.valid_gaps_count,
+            gapAnalysisId=str(analysis.id),
+            totalGaps=analysis.total_gaps_identified,
+            validGaps=analysis.valid_gaps_count,
             gaps=gap_details,
-            completed_at=analysis.completed_at
+            completedAt=analysis.completed_at
         )
     
     async def _mark_analysis_completed(

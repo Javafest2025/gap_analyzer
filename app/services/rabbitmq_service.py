@@ -200,9 +200,9 @@ class RabbitMQService:
                 body=message_body.encode(),
                 delivery_mode=DeliveryMode.PERSISTENT,
                 content_type='application/json',
-                correlation_id=response.correlation_id,
+                correlation_id=response.correlationId,
                 headers={
-                    'request_id': response.request_id,
+                    'request_id': response.requestId,
                     'status': response.status
                 }
             )
@@ -213,7 +213,7 @@ class RabbitMQService:
                 routing_key=self.response_routing_key
             )
             
-            logger.info(f"Published response for request: {response.request_id}")
+            logger.info(f"Published response for request: {response.requestId}")
             
         except Exception as e:
             logger.error(f"Failed to publish response: {e}")

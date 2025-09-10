@@ -11,7 +11,7 @@ import sys
 
 from app.core.config import settings
 from app.api import health, endpoints
-from app.core.database import init_db
+from app.core.database import db_manager
 
 # Constants
 APP_NAME = settings.APP_NAME
@@ -38,12 +38,12 @@ async def lifespan(app: FastAPI):
         if not settings.DEBUG:
             sys.exit(1)
     
-    # Initialize database
+    # Initialize database connection (no table creation)
     try:
-        await init_db()
-        logger.info("Database initialized successfully")
+        await db_manager.initialize()
+        logger.info("Database connection established successfully")
     except Exception as e:
-        logger.error(f"Failed to initialize database: {e}")
+        logger.error(f"Failed to establish database connection: {e}")
         if settings.DEBUG:
             logger.warning("Running in debug mode - continuing without database connection")
         else:

@@ -177,45 +177,8 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
-# Utility functions
-async def init_db():
-    """Initialize database tables."""
-    try:
-        # First initialize the database manager if not already done
-        if not db_manager._engine:
-            await db_manager.initialize()
-        
-        async with db_manager._engine.begin() as conn:
-            # Import all models to ensure they're registered
-            from app.model import (
-                paper,
-                paper_extraction,
-                gap_models
-            )
-            
-            # Create all tables
-            await conn.run_sync(Base.metadata.create_all)
-            logger.info("Database tables initialized")
-            
-    except Exception as e:
-        logger.error(f"Failed to initialize database tables: {e}")
-        raise
-
-
-async def drop_db():
-    """Drop all database tables (use with caution!)."""
-    try:
-        # First initialize the database manager if not already done
-        if not db_manager._engine:
-            await db_manager.initialize()
-            
-        async with db_manager._engine.begin() as conn:
-            await conn.run_sync(Base.metadata.drop_all)
-            logger.warning("All database tables dropped!")
-            
-    except Exception as e:
-        logger.error(f"Failed to drop database tables: {e}")
-        raise
+# Note: Database table creation/management is handled by Spring Boot service
+# This Python service only performs CRUD operations on existing tables
 
 
 # Export
@@ -223,7 +186,5 @@ __all__ = [
     'Base',
     'DatabaseManager',
     'db_manager',
-    'get_db',
-    'init_db',
-    'drop_db'
+    'get_db'
 ]

@@ -24,43 +24,49 @@ class GapAnalysisRequest(BaseModel):
 
 class GapAnalysisResponse(BaseModel):
     """Response model for gap analysis to RabbitMQ"""
-    request_id: str
-    correlation_id: str
+    requestId: str = Field(alias="request_id")
+    correlationId: str = Field(alias="correlation_id")
     status: str
     message: str
-    gap_analysis_id: Optional[str] = None
-    total_gaps: int = 0
-    valid_gaps: int = 0
+    gapAnalysisId: Optional[str] = Field(default=None, alias="gap_analysis_id")
+    totalGaps: int = Field(default=0, alias="total_gaps")
+    validGaps: int = Field(default=0, alias="valid_gaps")
     gaps: Optional[List['GapDetail']] = None
     error: Optional[str] = None
-    completed_at: Optional[datetime] = None
+    completedAt: Optional[datetime] = Field(default=None, alias="completed_at")
+    
+    class Config:
+        populate_by_name = True  # Allow both camelCase and snake_case
 
 
 class GapDetail(BaseModel):
     """Detailed information about a research gap"""
-    gap_id: str
+    gapId: str = Field(alias="gap_id")
     name: str
     description: str
     category: str
-    validation_status: str
-    confidence_score: float
+    validationStatus: str = Field(alias="validation_status")
+    confidenceScore: float = Field(alias="confidence_score")
     
     # Expanded information
-    potential_impact: Optional[str] = None
-    research_hints: Optional[str] = None
-    implementation_suggestions: Optional[str] = None
-    risks_and_challenges: Optional[str] = None
-    required_resources: Optional[str] = None
-    estimated_difficulty: Optional[str] = None
-    estimated_timeline: Optional[str] = None
+    potentialImpact: Optional[str] = Field(default=None, alias="potential_impact")
+    researchHints: Optional[str] = Field(default=None, alias="research_hints")
+    implementationSuggestions: Optional[str] = Field(default=None, alias="implementation_suggestions")
+    risksAndChallenges: Optional[str] = Field(default=None, alias="risks_and_challenges")
+    requiredResources: Optional[str] = Field(default=None, alias="required_resources")
+    estimatedDifficulty: Optional[str] = Field(default=None, alias="estimated_difficulty")
+    estimatedTimeline: Optional[str] = Field(default=None, alias="estimated_timeline")
     
     # Evidence
-    evidence_anchors: List[Dict[str, str]] = Field(default_factory=list)
-    supporting_papers_count: int = 0
-    conflicting_papers_count: int = 0
+    evidenceAnchors: List[Dict[str, str]] = Field(default_factory=list, alias="evidence_anchors")
+    supportingPapersCount: int = Field(default=0, alias="supporting_papers_count")
+    conflictingPapersCount: int = Field(default=0, alias="conflicting_papers_count")
     
     # Topics
-    suggested_topics: List['ResearchTopic'] = Field(default_factory=list)
+    suggestedTopics: List['ResearchTopic'] = Field(default_factory=list, alias="suggested_topics")
+    
+    class Config:
+        populate_by_name = True  # Allow both camelCase and snake_case
 
 
 class ResearchTopic(BaseModel):

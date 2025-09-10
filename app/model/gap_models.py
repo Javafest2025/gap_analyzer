@@ -43,11 +43,11 @@ class GapAnalysis(Base):
     paper_extraction_id = Column(UUID(as_uuid=True), ForeignKey("paper_extractions.id"), nullable=False)
     
     # Request tracking
-    correlation_id = Column(String(100), unique=True, nullable=False)
-    request_id = Column(String(100), unique=True, nullable=False)
+    correlation_id = Column(Text, unique=True, nullable=False)
+    request_id = Column(Text, unique=True, nullable=False)
     
     # Analysis metadata
-    status = Column(String(50), default=GapStatus.PENDING)
+    status = Column(Text, default=GapStatus.PENDING)
     started_at = Column(DateTime(timezone=True))
     completed_at = Column(DateTime(timezone=True))
     error_message = Column(Text)
@@ -79,16 +79,16 @@ class ResearchGap(Base):
     gap_analysis_id = Column(UUID(as_uuid=True), ForeignKey("gap_analyses.id"), nullable=False)
     
     # Gap identification
-    gap_id = Column(String(100), unique=True, nullable=False)
+    gap_id = Column(Text, unique=True, nullable=False)
     order_index = Column(Integer)
     
     # Core gap information
-    name = Column(String(500))
+    name = Column(Text)
     description = Column(Text)
-    category = Column(String(100))  # theoretical, methodological, empirical, etc.
+    category = Column(Text)  # theoretical, methodological, empirical, etc.
     
     # Validation status
-    validation_status = Column(String(50), default=GapValidationStatus.INITIAL)
+    validation_status = Column(Text, default=GapValidationStatus.INITIAL)
     validation_confidence = Column(Double)  # 0-1 confidence score
     
     # Initial analysis
@@ -107,7 +107,7 @@ class ResearchGap(Base):
     implementation_suggestions = Column(Text)
     risks_and_challenges = Column(Text)
     required_resources = Column(Text)
-    estimated_difficulty = Column(String(50))  # low, medium, high
+    estimated_difficulty = Column(Text)  # low, medium, high
     estimated_timeline = Column(Text)  # e.g., "6-12 months"
     
     # Evidence and references
@@ -139,13 +139,13 @@ class GapValidationPaper(Base):
     research_gap_id = Column(UUID(as_uuid=True), ForeignKey("research_gaps.id"), nullable=False)
     
     # Paper information
-    title = Column(String(1000))
-    doi = Column(String(200))
-    url = Column(String(1000))
+    title = Column(Text)
+    doi = Column(Text)
+    url = Column(Text)
     publication_date = Column(DateTime)
     
     # Extraction status
-    extraction_status = Column(String(50))
+    extraction_status = Column(Text)
     extracted_text = Column(Text)
     extraction_error = Column(Text)
     
@@ -172,7 +172,7 @@ class GapTopic(Base):
     research_gap_id = Column(UUID(as_uuid=True), ForeignKey("research_gaps.id"), nullable=False)
     
     # Topic information
-    title = Column(String(500))
+    title = Column(Text)
     description = Column(Text)
     research_questions = Column(JSON)  # List of research questions
     methodology_suggestions = Column(Text)
