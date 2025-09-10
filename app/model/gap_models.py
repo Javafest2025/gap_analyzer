@@ -108,7 +108,7 @@ class ResearchGap(Base):
     risks_and_challenges = Column(Text)
     required_resources = Column(Text)
     estimated_difficulty = Column(String(50))  # low, medium, high
-    estimated_timeline = Column(String(100))  # e.g., "6-12 months"
+    estimated_timeline = Column(Text)  # e.g., "6-12 months"
     
     # Evidence and references
     evidence_anchors = Column(JSON)  # Links to papers analyzed

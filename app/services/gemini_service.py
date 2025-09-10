@@ -27,26 +27,84 @@ class GeminiService:
             time_window=60  # 1 minute window
         )
         
-    @retry_async(max_attempts=3, delay=2)
+        # Circuit breaker state
+        self.circuit_breaker_failures = 0
+        self.circuit_breaker_threshold = 3
+        self.circuit_breaker_timeout = 300  # 5 minutes
+        self.circuit_breaker_last_failure = None
+        self.circuit_breaker_state = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
+    
+    def _check_circuit_breaker(self) -> bool:
+        """Check if circuit breaker allows the request."""
+        import time
+        
+        if self.circuit_breaker_state == "CLOSED":
+            return True
+        elif self.circuit_breaker_state == "OPEN":
+            if time.time() - self.circuit_breaker_last_failure > self.circuit_breaker_timeout:
+                self.circuit_breaker_state = "HALF_OPEN"
+                logger.info("Circuit breaker moved to HALF_OPEN state")
+                return True
+            return False
+        elif self.circuit_breaker_state == "HALF_OPEN":
+            return True
+        return False
+    
+    def _record_success(self):
+        """Record a successful API call."""
+        if self.circuit_breaker_state == "HALF_OPEN":
+            self.circuit_breaker_state = "CLOSED"
+            self.circuit_breaker_failures = 0
+            logger.info("Circuit breaker moved to CLOSED state after success")
+    
+    def _record_failure(self):
+        """Record a failed API call."""
+        import time
+        
+        self.circuit_breaker_failures += 1
+        self.circuit_breaker_last_failure = time.time()
+        
+        if self.circuit_breaker_failures >= self.circuit_breaker_threshold:
+            self.circuit_breaker_state = "OPEN"
+            logger.warning(f"Circuit breaker opened after {self.circuit_breaker_failures} failures")
+    
+    async def _exponential_backoff(self, attempt: int, base_delay: float = 1.0):
+        """Implement exponential backoff with jitter."""
+        import random
+        
+        delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+        max_delay = 60  # Maximum 60 seconds
+        delay = min(delay, max_delay)
+        
+        logger.info(f"Exponential backoff: waiting {delay:.2f} seconds before retry {attempt + 1}")
+        await asyncio.sleep(delay)
+        
     async def generate_initial_gaps(
         self, 
         paper_data: Dict[str, Any],
         extracted_content: Dict[str, Any]
     ) -> List[InitialGap]:
         """Generate initial research gaps from paper content."""
-        try:
-            # Apply rate limiting
-            await self.rate_limiter.wait_if_needed()
-            
-            # Prepare paper context
-            context = self._prepare_paper_context(paper_data, extracted_content)
-            
-            prompt = f"""
+        # Check circuit breaker
+        if not self._check_circuit_breaker():
+            logger.warning("Circuit breaker is OPEN, skipping API call")
+            return []
+        
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                # Apply rate limiting
+                await self.rate_limiter.wait_if_needed()
+                
+                # Prepare paper context
+                context = self._prepare_paper_context(paper_data, extracted_content)
+                
+                prompt = f"""
             Analyze the following academic paper and identify research gaps:
 
             {context}
 
-            Identify 5-10 significant research gaps in this paper. For each gap, provide:
+            Identify 3-7 significant research gaps in this paper. For each gap, provide:
             1. A concise name (max 100 characters)
             2. A detailed description of the gap
             3. Category (theoretical, methodological, empirical, application, or interdisciplinary)
@@ -73,45 +131,67 @@ class GeminiService:
             
             Respond ONLY with valid JSON array.
             """
-            
-            response = await asyncio.to_thread(
-                self.model.generate_content, prompt
-            )
-            
-            # Parse response
-            gaps_data = parse_json_safely(response.text, [])
-            gaps = [InitialGap(**gap) for gap in gaps_data]
-            
-            logger.info(f"Generated {len(gaps)} initial gaps")
-            return gaps
-            
-        except Exception as e:
-            logger.error(f"Error generating initial gaps: {e}")
-            return []
+                
+                response = await asyncio.to_thread(
+                    self.model.generate_content, prompt
+                )
+                
+                # Parse response
+                gaps_data = parse_json_safely(response.text, [])
+                gaps = [InitialGap(**gap) for gap in gaps_data]
+                
+                # Record success
+                self._record_success()
+                logger.info(f"Generated {len(gaps)} initial gaps")
+                return gaps
+                
+            except Exception as e:
+                error_str = str(e)
+                logger.error(f"Error generating initial gaps (attempt {attempt + 1}): {e}")
+                
+                # Record failure
+                self._record_failure()
+                
+                # Check if it's a rate limit error
+                if "429" in error_str or "quota" in error_str.lower():
+                    logger.warning(f"Rate limit exceeded for gap generation: {e}")
+                    if attempt < max_attempts - 1:
+                        await self._exponential_backoff(attempt, base_delay=30.0)  # Longer delay for rate limits
+                        continue
+                    else:
+                        return []
+                else:
+                    if attempt < max_attempts - 1:
+                        await self._exponential_backoff(attempt)
+                        continue
+                    else:
+                        return []
+        
+        return []
     
     async def generate_search_query(self, gap: InitialGap) -> str:
-        """Generate an advanced search query for validating a gap."""
+        """Generate a simple search query optimized for arXiv."""
         try:
             prompt = f"""
-            Generate an advanced academic search query to find papers that might have addressed this research gap:
+            Generate a simple search query for arXiv to find papers related to this research gap:
 
             Gap Name: {gap.name}
             Description: {gap.description}
             Category: {gap.category}
 
-            Create a search query that will find:
-            1. Papers that directly address this gap
-            2. Related work in this area
-            3. Similar methodologies or approaches
-            4. Recent advances that might fill this gap
+            Create a simple search query that:
+            1. Uses only 2-4 key terms (no boolean operators)
+            2. Focuses on the main topic/domain
+            3. Uses common academic terminology
+            4. Is suitable for arXiv's simple search
 
-            The query should be:
-            - Specific enough to find relevant papers
-            - Include key technical terms
-            - Use boolean operators if helpful
-            - Be optimized for academic search engines
+            Examples of good queries:
+            - "machine learning protein structure"
+            - "neural networks computer vision"
+            - "quantum computing algorithms"
+            - "natural language processing"
 
-            Return ONLY the search query string, nothing else.
+            Return ONLY the search terms separated by spaces, nothing else.
             """
             
             response = await asyncio.to_thread(
@@ -119,13 +199,17 @@ class GeminiService:
             )
             
             query = response.text.strip().strip('"')
-            logger.info(f"Generated search query for gap: {query}")
+            logger.info(f"Generated arXiv search query for gap: {query}")
             return query
             
         except Exception as e:
             logger.error(f"Error generating search query: {e}")
-            # Fallback to basic query
-            return f"{gap.name} {gap.category}"
+            # Fallback to basic query using gap name and category
+            fallback_query = f"{gap.name} {gap.category}".lower()
+            # Clean up the query for arXiv
+            fallback_query = ' '.join(fallback_query.split()[:4])  # Limit to 4 words
+            logger.info(f"Using fallback query: {fallback_query}")
+            return fallback_query
     
     @retry_async(max_attempts=3, delay=2)
     async def validate_gap(
@@ -186,14 +270,27 @@ class GeminiService:
             return ValidationResult(**validation_data)
             
         except Exception as e:
-            logger.error(f"Error validating gap: {e}")
-            # Return default validation (assume valid with low confidence)
-            return ValidationResult(
-                is_valid=True,
-                confidence=0.3,
-                reasoning="Could not validate due to error",
-                should_modify=False
-            )
+            error_str = str(e)
+            if "429" in error_str or "quota" in error_str.lower():
+                logger.warning(f"Rate limit exceeded for gap validation: {e}")
+                # Wait longer for rate limit
+                await asyncio.sleep(60)  # Wait 1 minute for rate limit reset
+                # Return default validation
+                return ValidationResult(
+                    is_valid=True,
+                    confidence=0.3,
+                    reasoning="Rate limited - assuming valid with low confidence",
+                    should_modify=False
+                )
+            else:
+                logger.error(f"Error validating gap: {e}")
+                # Return default validation (assume valid with low confidence)
+                return ValidationResult(
+                    is_valid=True,
+                    confidence=0.3,
+                    reasoning="Could not validate due to error",
+                    should_modify=False
+                )
     
     @retry_async(max_attempts=3, delay=2)
     async def expand_gap_details(
@@ -250,13 +347,20 @@ class GeminiService:
             return expanded_data
             
         except Exception as e:
-            logger.error(f"Error expanding gap details: {e}")
+            error_str = str(e)
+            if "429" in error_str or "quota" in error_str.lower():
+                logger.warning(f"Rate limit exceeded for gap expansion: {e}")
+                # Wait longer for rate limit
+                await asyncio.sleep(60)  # Wait 1 minute for rate limit reset
+            else:
+                logger.error(f"Error expanding gap details: {e}")
+            
             return {
-                "potential_impact": "Unable to generate impact analysis",
-                "research_hints": "Unable to generate hints",
-                "implementation_suggestions": "Unable to generate suggestions",
-                "risks_and_challenges": "Unable to identify risks",
-                "required_resources": "Unable to identify resources",
+                "potential_impact": "Unable to generate impact analysis due to rate limiting",
+                "research_hints": "Unable to generate hints due to rate limiting",
+                "implementation_suggestions": "Unable to generate suggestions due to rate limiting",
+                "risks_and_challenges": "Unable to identify risks due to rate limiting",
+                "required_resources": "Unable to identify resources due to rate limiting",
                 "estimated_difficulty": "unknown",
                 "estimated_timeline": "unknown",
                 "suggested_topics": []

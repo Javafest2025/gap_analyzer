@@ -8,11 +8,12 @@ from typing import Optional, Dict, Any
 from aio_pika import connect, Message, ExchangeType, DeliveryMode
 from aio_pika.abc import AbstractIncomingMessage, AbstractConnection, AbstractChannel
 from loguru import logger
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.gap_schemas import GapAnalysisRequest, GapAnalysisResponse
 from app.services.gap_analysis_service import GapAnalysisService
 from app.core.config import settings
+from app.core.database import db_manager
 
 
 class RabbitMQService:
@@ -32,16 +33,13 @@ class RabbitMQService:
         # Initialize services
         self.gap_service = GapAnalysisService(gemini_api_key, grobid_url)
         
-        # Database setup
-        self.engine = create_async_engine(db_url, echo=False)
-        self.async_session = async_sessionmaker(
-            self.engine,
-            class_=AsyncSession,
-            expire_on_commit=False
-        )
+        # Use the improved database manager with retry logic
+        # No need to create separate engine - use the global db_manager
         
         # Queue configuration
         self.request_queue = "gap_analysis_requests"
+        self.request_exchange = "scholarai.exchange"
+        self.request_routing_key = "gap.analysis.request"
         self.response_exchange = "gap_analysis_responses"
         self.response_routing_key = "gap.analysis.response"
     
@@ -55,10 +53,23 @@ class RabbitMQService:
             # Set prefetch count to process one message at a time
             await self.channel.set_qos(prefetch_count=1)
             
+            # Declare request exchange (the main application exchange)
+            request_exchange = await self.channel.declare_exchange(
+                self.request_exchange,
+                type=ExchangeType.TOPIC,
+                durable=True
+            )
+            
             # Declare request queue
             request_queue = await self.channel.declare_queue(
                 self.request_queue,
                 durable=True
+            )
+            
+            # Bind request queue to the exchange with routing key
+            await request_queue.bind(
+                request_exchange,
+                routing_key=self.request_routing_key
             )
             
             # Declare response exchange
@@ -78,8 +89,9 @@ class RabbitMQService:
             raise
     
     async def process_message(self, message: AbstractIncomingMessage):
-        """Process incoming gap analysis request."""
-        async with message.process():
+        """Process incoming gap analysis request with proper exception handling."""
+        # Use requeue=False to reject messages on exception instead of requeuing
+        async with message.process(requeue=False):
             try:
                 # Parse message
                 body = message.body.decode()
@@ -88,17 +100,56 @@ class RabbitMQService:
                 request_data = json.loads(body)
                 request = GapAnalysisRequest(**request_data)
                 
-                logger.info(f"Processing gap analysis for paper: {request.paper_id}")
+                logger.info(f"Processing gap analysis for paper: {request.paperId}")
                 
-                # Create database session
-                async with self.async_session() as session:
-                    # Perform gap analysis
-                    response = await self.gap_service.analyze_paper(request, session)
-                
-                # Publish response
-                await self.publish_response(response)
-                
-                logger.info(f"Gap analysis completed for request: {request.request_id}")
+                # Create database session using the improved database manager with retry logic
+                async with db_manager.get_session() as session:
+                    try:
+                        # Perform gap analysis
+                        response = await self.gap_service.analyze_paper(request, session)
+                        
+                        # Publish response
+                        await self.publish_response(response)
+                        
+                        logger.info(f"Gap analysis completed for request: {request.requestId}")
+                        # Message will be acked automatically on successful exit
+                        
+                    except Exception as db_error:
+                        # Rollback the session on any database error
+                        await session.rollback()
+                        logger.error(f"Database error during gap analysis: {db_error}")
+                        
+                        # Check if it's a duplicate correlation_id (idempotency issue)
+                        if "duplicate key value violates unique constraint" in str(db_error) and "correlation_id" in str(db_error):
+                            logger.info(f"Duplicate correlation_id {request.correlationId} - treating as retry")
+                            
+                            # Load existing analysis and return success
+                            from sqlalchemy import select
+                            from app.model.gap_models import GapAnalysis
+                            
+                            existing_analysis = await session.scalar(
+                                select(GapAnalysis).where(GapAnalysis.correlation_id == request.correlationId)
+                            )
+                            
+                            if existing_analysis:
+                                # Create a success response for the existing analysis
+                                response = GapAnalysisResponse(
+                                    request_id=request.requestId,
+                                    correlation_id=request.correlationId,
+                                    status="SUCCESS",
+                                    message="Analysis already exists (duplicate request handled)",
+                                    gap_analysis_id=str(existing_analysis.id),
+                                    total_gaps=existing_analysis.total_gaps_identified or 0,
+                                    valid_gaps=existing_analysis.valid_gaps_count or 0,
+                                    gaps=[]  # Could be populated if needed
+                                )
+                                
+                                await self.publish_response(response)
+                                # Message will be acked automatically on successful exit
+                                return
+                        
+                        # For other database errors, re-raise to let context manager handle rejection
+                        raise
                 
             except json.JSONDecodeError as e:
                 logger.error(f"Invalid JSON in message: {e}")
@@ -106,6 +157,7 @@ class RabbitMQService:
                     message.body.decode(),
                     f"Invalid JSON: {str(e)}"
                 )
+                # Don't re-raise - let context manager ack the message
                 
             except Exception as e:
                 logger.error(f"Error processing message: {e}")
@@ -113,8 +165,8 @@ class RabbitMQService:
                 # Try to extract request ID for error response
                 try:
                     partial_data = json.loads(message.body.decode())
-                    request_id = partial_data.get('request_id', 'unknown')
-                    correlation_id = partial_data.get('correlation_id', 'unknown')
+                    request_id = partial_data.get('requestId', 'unknown')
+                    correlation_id = partial_data.get('correlationId', 'unknown')
                     
                     error_response = GapAnalysisResponse(
                         request_id=request_id,
@@ -125,9 +177,12 @@ class RabbitMQService:
                     )
                     
                     await self.publish_response(error_response)
+                    # Don't re-raise - let context manager ack the message
                     
                 except Exception as e:
                     logger.error(f"Could not send error response: {e}")
+                    # Re-raise to let context manager reject the message
+                    raise
     
     async def publish_response(self, response: GapAnalysisResponse):
         """Publish gap analysis response to Spring backend."""
@@ -211,19 +266,22 @@ class RabbitMQService:
             await self.connection.close()
             logger.info("Disconnected from RabbitMQ")
         
-        # Close database engine
-        await self.engine.dispose()
+        # Close database connections using the global db_manager
+        await db_manager.close()
         logger.info("Database connections closed")
 
 
-async def create_rabbitmq_service(settings) -> RabbitMQService:
+def create_rabbitmq_service(settings) -> RabbitMQService:
     """Factory function to create RabbitMQ service."""
-    rabbitmq_url = f"amqp://{settings.RABBITMQ_USER}:{settings.RABBITMQ_PASSWORD}@localhost/"
-    db_url = f"postgresql+asyncpg://{settings.DB_USER}:{settings.DB_PASSWORD}@{settings.DB_HOST}:{settings.DB_PORT}/{settings.DB_NAME}"
+    import urllib.parse
+    
+    # URL encode the password to handle special characters like @
+    encoded_password = urllib.parse.quote(settings.RABBITMQ_PASSWORD, safe='')
+    rabbitmq_url = f"amqp://{settings.RABBITMQ_USER}:{encoded_password}@localhost/"
     
     return RabbitMQService(
         rabbitmq_url=rabbitmq_url,
-        db_url=db_url,
+        db_url="",  # Not used anymore - we use the global db_manager
         gemini_api_key=settings.GEMINI_API_KEY,
         grobid_url=settings.GROBID_URL
     )

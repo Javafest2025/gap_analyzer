@@ -143,8 +143,7 @@ class ExtractedFigure(Base):
     image_path = Column(String(500))
     thumbnail_path = Column(String(500))
     
-    # References to this figure (stored as JSON array)
-    references = Column(Text)  # section IDs that reference this figure
+    # Note: references column removed to match actual database schema
     
     # OCR extracted text for LLM processing
     ocr_text = Column(Text)  # text extracted from the figure image
@@ -188,8 +187,7 @@ class ExtractedTable(Base):
     csv_path = Column(String(500))
     html = Column(Text)  # HTML representation
     
-    # References to this table (stored as JSON array)
-    references = Column(Text)  # section IDs that reference this table
+    # Note: references column removed to match actual database schema
     order_index = Column(Integer)  # for maintaining table order
     
     # Relationships

@@ -47,22 +47,22 @@ class Settings(BaseSettings):
     
     # External Services
     GROBID_URL: str
-    GROBID_TIMEOUT: int = 60
+    GROBID_TIMEOUT: int = 120  # Increased timeout for GROBID processing
     GEMINI_API_KEY: str
     GEMINI_MODEL: str = "gemini-2.0-flash-exp"
-    GEMINI_RATE_LIMIT: int = 15  # requests per minute
+    GEMINI_RATE_LIMIT: int = 2  # requests per minute (extremely conservative for free tier)
     
     # Search Service Configuration
     SEMANTIC_SCHOLAR_API_URL: str = "https://api.semanticscholar.org/graph/v1/paper/search"
     CROSSREF_API_URL: str = "https://api.crossref.org/works"
-    ARXIV_API_URL: str = "http://export.arxiv.org/api/query"
+    ARXIV_API_URL: str = "https://export.arxiv.org/api/query"
     SEARCH_MAX_RESULTS: int = 10
     SEARCH_TIMEOUT: int = 30
     
     # Gap Analysis Configuration
-    MAX_GAPS_PER_PAPER: int = 10
-    MIN_GAPS_PER_PAPER: int = 5
-    GAP_VALIDATION_PAPERS: int = 10
+    MAX_GAPS_PER_PAPER: int = 7
+    MIN_GAPS_PER_PAPER: int = 3
+    GAP_VALIDATION_PAPERS: int = 5
     GAP_CONFIDENCE_THRESHOLD: float = 0.5
     VALIDATION_BATCH_SIZE: int = 5
     
@@ -75,7 +75,7 @@ class Settings(BaseSettings):
     
     # Performance Configuration
     ASYNC_TIMEOUT: int = 300  # 5 minutes
-    MAX_CONCURRENT_VALIDATIONS: int = 3
+    MAX_CONCURRENT_VALIDATIONS: int = 1  # Process gaps sequentially to avoid rate limits
     RETRY_ATTEMPTS: int = 3
     RETRY_DELAY: int = 5  # seconds
     

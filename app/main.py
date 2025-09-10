@@ -192,7 +192,7 @@ async def _initialize_external_services():
     # Initialize RabbitMQ service
     try:
         from app.services.rabbitmq_service import create_rabbitmq_service
-        rabbitmq_service = await create_rabbitmq_service(settings)
+        rabbitmq_service = create_rabbitmq_service(settings)
         logger.info(f"RabbitMQ service initialized with URL: {settings.rabbitmq_url}")
         
         # Test RabbitMQ connection

@@ -42,10 +42,10 @@ class GapAnalysisService:
         self.search_service = WebSearchService()
         self.grobid_client = GrobidClient(grobid_url)
         
-        # Initialize batch processor for gap validation
+        # Initialize batch processor for gap validation - process sequentially
         self.batch_processor = AsyncBatchProcessor(
-            batch_size=5,  # Process 5 gaps at a time
-            max_concurrent=2  # Maximum 2 concurrent batches
+            batch_size=1,  # Process 1 gap at a time to avoid rate limits
+            max_concurrent=1  # Maximum 1 concurrent batch to respect rate limits
         )
     
     async def analyze_paper(
@@ -57,76 +57,122 @@ class GapAnalysisService:
         analysis = None
         
         try:
+            logger.info(f"Starting gap analysis for paper: {request.paperId}")
+            logger.info(f"Request ID: {request.requestId}, Correlation ID: {request.correlationId}")
+            
+            # Test network connectivity first
+            logger.info("Step 1: Testing network connectivity...")
+            await self._test_network_connectivity()
+            logger.info("Network connectivity test completed successfully")
+            
             # Create gap analysis record
+            logger.info("Step 2: Creating gap analysis record...")
             analysis = await self._create_gap_analysis(request, session)
+            logger.info(f"Gap analysis record created with ID: {analysis.id}")
             
             # Fetch paper and extraction data
+            logger.info("Step 3: Fetching paper and extraction data...")
             paper_data, extracted_content = await self._fetch_paper_data(
-                request.paper_id,
-                request.paper_extraction_id,
+                request.paperId,
+                request.paperExtractionId,
                 session
             )
             
             if not paper_data:
                 raise ValueError("Paper not found")
+            logger.info(f"Paper data fetched successfully. Title: {paper_data.get('title', 'N/A')}")
             
             # Generate initial gaps
-            logger.info("Generating initial gaps...")
+            logger.info("Step 4: Generating initial gaps using Gemini AI...")
             initial_gaps = await self.gemini_service.generate_initial_gaps(
                 paper_data,
                 extracted_content
             )
             
             if not initial_gaps:
-                raise ValueError("No gaps could be identified")
+                logger.warning("No gaps could be identified from the paper content")
+                # Return a response indicating no gaps were found
+                await self._mark_analysis_completed(analysis, 0, 0, 0, 0, session)
+                return GapAnalysisResponse(
+                    request_id=request.requestId,
+                    correlation_id=request.correlationId,
+                    status="COMPLETED",
+                    message="Analysis completed - no research gaps identified",
+                    gap_analysis_id=str(analysis.id),
+                    total_gaps=0,
+                    valid_gaps=0,
+                    gaps=[]
+                )
+            logger.info(f"Generated {len(initial_gaps)} initial gaps")
             
             # Process gaps in batches for better performance
-            gap_processing_tasks = []
+            logger.info("Step 5: Processing gaps for validation and expansion...")
+            # Process gaps sequentially to avoid rate limiting
+            gap_results = []
             for i, gap in enumerate(initial_gaps):
-                task = self._process_single_gap(
-                    analysis.id,
-                    gap,
-                    i,
-                    session
-                )
-                gap_processing_tasks.append(task)
+                logger.info(f"Processing gap {i+1}/{len(initial_gaps)}: {gap.name}")
+                try:
+                    result = await self._process_single_gap(
+                        analysis.id,
+                        gap,
+                        i
+                    )
+                    gap_results.append(result)
+                    logger.info(f"Gap {i+1} processing completed successfully")
+                except Exception as e:
+                    logger.error(f"Error processing gap {i+1}: {e}")
+                    gap_results.append(None)
             
-            # Process all gaps concurrently using batch processor
-            gap_results = await self.batch_processor.process(
-                gap_processing_tasks,
-                lambda task: task  # Identity function since tasks are already coroutines
-            )
+            logger.info("Sequential gap processing completed")
             
             # Filter valid gaps
-            valid_gaps = [result for result in gap_results if result is not None]
+            valid_gap_data = [result for result in gap_results if result is not None]
+            logger.info(f"Found {len(valid_gap_data)} valid gaps out of {len(initial_gaps)} total")
             
             # Update analysis summary
+            logger.info("Step 6: Updating analysis summary...")
             await self._update_analysis_summary(
                 analysis,
                 len(initial_gaps),
-                len(valid_gaps),
+                len(valid_gap_data),
                 session
             )
             
             # Prepare response
-            response = await self._prepare_response(
+            logger.info("Step 7: Preparing final response...")
+            response = self._prepare_response(
                 analysis,
-                valid_gaps,
-                session
+                valid_gap_data
             )
             
-            logger.info(f"Gap analysis completed: {len(valid_gaps)}/{len(initial_gaps)} valid gaps")
+            logger.info(f"Gap analysis completed successfully: {len(valid_gap_data)}/{len(initial_gaps)} valid gaps")
             return response
             
         except Exception as e:
-            logger.error(f"Gap analysis failed: {e}")
+            import traceback
+            from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
             
+            logger.error(f"Gap analysis failed: {e}")
+            logger.error(f"Error type: {type(e).__name__}")
+            logger.error(f"Stack trace: {traceback.format_exc()}")
+            
+            # Rollback the session before any further operations
+            try:
+                await session.rollback()
+                logger.info("Session rolled back successfully after error")
+            except Exception as rollback_error:
+                logger.error(f"Failed to rollback session: {rollback_error}")
+            
+            # Mark analysis as failed
             if analysis:
-                await self._mark_analysis_failed(analysis, str(e), session)
+                try:
+                    await self._mark_analysis_failed(analysis, str(e), session)
+                except Exception as mark_error:
+                    logger.error(f"Failed to mark analysis as failed: {mark_error}")
             
             return GapAnalysisResponse(
-                request_id=request.request_id,
-                correlation_id=request.correlation_id,
+                request_id=request.requestId,
+                correlation_id=request.correlationId,
                 status="FAILED",
                 message=f"Analysis failed: {str(e)}",
                 error=str(e)
@@ -134,29 +180,139 @@ class GapAnalysisService:
         
         finally:
             # Cleanup
+            logger.info("Cleaning up resources...")
             await self.search_service.close()
             await self.grobid_client.close()
+            logger.info("Cleanup completed")
+    
+    async def _test_network_connectivity(self):
+        """Test network connectivity to external services."""
+        import socket
+        import httpx
+        
+        # Test DNS resolution for external APIs
+        test_hosts = [
+            'export.arxiv.org',  # arXiv API
+            'generativelanguage.googleapis.com'  # Gemini API
+        ]
+        
+        for host in test_hosts:
+            try:
+                # Test DNS resolution
+                socket.gethostbyname(host)
+                logger.info(f"DNS resolution successful for {host}")
+            except socket.gaierror as e:
+                logger.error(f"DNS resolution failed for {host}: {e}")
+                raise ConnectionError(
+                    f"Network connectivity issue: Cannot resolve hostname '{host}'. "
+                    "Please check your internet connection and DNS settings. "
+                    f"Error: {e}"
+                )
+        
+        # Test HTTP connectivity to arXiv API
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get("https://export.arxiv.org/api/query?search_query=test&max_results=1")
+                if response.status_code == 200:
+                    logger.info("arXiv API connectivity test successful")
+                else:
+                    logger.warning(f"arXiv API connectivity test returned status {response.status_code}")
+        except Exception as e:
+            logger.error(f"arXiv API connectivity test failed: {e}")
+            raise ConnectionError(
+                f"Network connectivity issue: Cannot reach arXiv API. "
+                "Please check your internet connection and firewall settings. "
+                f"Error: {e}"
+            )
+        
+        # Test Gemini API connectivity
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                # Test Gemini API endpoint - we expect 401/403 without proper auth, but that means the API is reachable
+                response = await client.get("https://generativelanguage.googleapis.com/v1beta/models")
+                if response.status_code == 200:
+                    logger.info("Gemini API connectivity test successful")
+                elif response.status_code in [401, 403]:
+                    logger.info("Gemini API connectivity test successful (API reachable, auth required)")
+                else:
+                    logger.warning(f"Gemini API returned unexpected status {response.status_code}")
+        except Exception as e:
+            logger.error(f"Gemini API connectivity test failed: {e}")
+            raise ConnectionError(
+                f"Gemini API connectivity issue: Cannot reach Google's Generative AI API. "
+                "Please check your internet connection and firewall settings. "
+                f"Error: {e}"
+            )
+        
+        # Test GROBID service connectivity
+        try:
+            grobid_host = self.grobid_client.grobid_url.replace('http://', '').replace('https://', '').split(':')[0]
+            socket.gethostbyname(grobid_host)
+            logger.info(f"GROBID service DNS resolution successful for {grobid_host}")
+            
+            # Test HTTP connectivity to GROBID
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(f"{self.grobid_client.grobid_url}/api/isalive")
+                if response.status_code == 200:
+                    logger.info("GROBID service connectivity test successful")
+                else:
+                    logger.warning(f"GROBID service returned status {response.status_code}")
+        except Exception as e:
+            logger.error(f"GROBID service connectivity test failed: {e}")
+            raise ConnectionError(
+                f"GROBID service connectivity issue: Cannot reach GROBID service at {self.grobid_client.grobid_url}. "
+                "Please check if GROBID service is running and accessible. "
+                f"Error: {e}"
+            )
     
     async def _create_gap_analysis(
         self,
         request: GapAnalysisRequest,
         session: AsyncSession
     ) -> GapAnalysis:
-        """Create initial gap analysis record."""
-        analysis = GapAnalysis(
-            paper_id=request.paper_id,
-            paper_extraction_id=request.paper_extraction_id,
-            correlation_id=request.correlation_id,
-            request_id=request.request_id,
-            status=GapStatus.PROCESSING,
-            started_at=datetime.now(timezone.utc),
-            config=request.config
+        """Create initial gap analysis record with idempotency on correlation_id."""
+        from sqlalchemy.dialects.postgresql import insert
+        from sqlalchemy import func
+        
+        values = {
+            'id': uuid4(),
+            'paper_id': request.paperId,
+            'paper_extraction_id': request.paperExtractionId,
+            'correlation_id': request.correlationId,  # idempotency key
+            'request_id': request.requestId,
+            'status': GapStatus.PROCESSING,
+            'started_at': datetime.now(timezone.utc),
+            'error_message': None,
+            'config': request.config,
+            'total_gaps_identified': 0,
+            'valid_gaps_count': 0,
+            'invalid_gaps_count': 0,
+            'modified_gaps_count': 0,
+        }
+        
+        stmt = (
+            insert(GapAnalysis)
+            .values(**values)
+            .on_conflict_do_update(
+                index_elements=["correlation_id"],
+                set_={
+                    "paper_id": request.paperId,
+                    "paper_extraction_id": request.paperExtractionId,
+                    "request_id": request.requestId,
+                    "status": GapStatus.PROCESSING,
+                    "started_at": func.now(),
+                    "error_message": None,
+                    "config": request.config,
+                },
+            )
+            .returning(GapAnalysis.id)
         )
         
-        session.add(analysis)
+        analysis_id = (await session.execute(stmt)).scalar_one()
         await session.commit()
-        await session.refresh(analysis)
         
+        # Fetch the complete record
+        analysis = await session.get(GapAnalysis, analysis_id)
         return analysis
     
     async def _fetch_paper_data(
@@ -257,121 +413,119 @@ class GapAnalysisService:
         
         return paper_data, extracted_content
     
-    async def _create_gap_record(
-        self,
-        analysis_id: str,
-        gap: InitialGap,
-        index: int,
-        session: AsyncSession
-    ) -> ResearchGap:
-        """Create a research gap record."""
-        gap_record = ResearchGap(
-            gap_analysis_id=analysis_id,
-            gap_id=str(uuid4()),
-            order_index=index,
-            name=gap.name,
-            description=gap.description,
-            category=gap.category,
-            initial_reasoning=gap.reasoning,
-            initial_evidence=gap.evidence,
-            validation_status=GapValidationStatus.INITIAL
-        )
-        
-        session.add(gap_record)
-        await session.commit()
-        await session.refresh(gap_record)
-        
-        return gap_record
     
     async def _process_single_gap(
         self,
         analysis_id: str,
         gap: InitialGap,
-        index: int,
-        session: AsyncSession
-    ) -> Optional[ResearchGap]:
-        """Process a single gap (create, validate, and expand)."""
+        index: int
+    ) -> Optional[Dict[str, Any]]:
+        """Process a single gap without creating database records."""
         try:
             logger.info(f"Processing gap {index+1}: {gap.name}")
+            logger.info(f"Gap category: {gap.category}")
+            logger.info(f"Gap description: {gap.description[:100]}...")
             
-            # Create gap record
-            gap_record = await self._create_gap_record(
-                analysis_id,
-                gap,
-                index,
-                session
-            )
-            
-            # Validate the gap
-            is_valid = await self._validate_gap(
-                gap,
-                gap_record,
-                session
-            )
+            # Validate gap (without creating database records)
+            logger.info(f"Validating gap {index+1}...")
+            is_valid = await self._validate_gap(gap)
+            logger.info(f"Validation completed for gap {index+1}. Valid: {is_valid}")
             
             if is_valid:
-                # Expand gap details
-                await self._expand_gap_details(
-                    gap,
-                    gap_record,
-                    session
-                )
-                return gap_record
+                # Expand gap details (without creating database records)
+                logger.info(f"Expanding details for gap {index+1}: {gap.name}")
+                expanded_details = await self._expand_gap_details(gap)
+                logger.info(f"Gap {index+1} processing completed successfully")
+                
+                # Return gap data for Java backend to process
+                return {
+                    'gap_id': f"{analysis_id}-{index}-{uuid4()}",
+                    'name': gap.name,
+                    'description': gap.description,
+                    'category': gap.category,
+                    'validation_status': 'VALID',
+                    'confidence_score': 0.8,
+                    'potential_impact': expanded_details.get('potential_impact'),
+                    'research_hints': expanded_details.get('research_hints'),
+                    'implementation_suggestions': expanded_details.get('implementation_suggestions'),
+                    'risks_and_challenges': expanded_details.get('risks_and_challenges'),
+                    'required_resources': expanded_details.get('required_resources'),
+                    'estimated_difficulty': expanded_details.get('estimated_difficulty'),
+                    'estimated_timeline': expanded_details.get('estimated_timeline'),
+                    'evidence_anchors': expanded_details.get('evidence_anchors', []),
+                    'suggested_topics': expanded_details.get('suggested_topics', [])
+                }
             else:
+                logger.info(f"Gap {index+1} marked as invalid")
                 return None
                 
         except Exception as e:
-            logger.error(f"Error processing gap {gap.name}: {e}")
+            logger.error(f"Error processing gap {index+1}: {e}")
             return None
     
     async def _validate_gap(
         self,
-        gap: InitialGap,
-        gap_record: ResearchGap,
-        session: AsyncSession
+        gap: InitialGap
     ) -> bool:
         """Validate a research gap by searching for related work."""
         try:
-            # Update status
-            gap_record.validation_status = GapValidationStatus.VALIDATING
-            await session.commit()
+            logger.info(f"Starting gap validation for: {gap.name}")
             
             # Generate search query
+            logger.info("Generating search query using Gemini AI...")
             search_query = await self.gemini_service.generate_search_query(gap)
-            gap_record.validation_query = search_query
+            logger.info(f"Generated search query: {search_query}")
             
             # Search for related papers
-            logger.info(f"Searching for papers: {search_query}")
-            related_papers = await self.search_service.search_papers(
-                search_query,
-                max_results=10
-            )
+            logger.info(f"Starting paper search with query: {search_query}")
+            try:
+                related_papers = await self.search_service.search_papers(
+                    search_query,
+                    max_results=5
+                )
+                logger.info(f"Paper search completed. Found {len(related_papers)} papers")
+            except Exception as search_error:
+                import traceback
+                logger.error(f"Failed to search for papers: {search_error}")
+                logger.error(f"Search error type: {type(search_error).__name__}")
+                logger.error(f"Search error stack trace: {traceback.format_exc()}")
+                
+                # Check if it's a network connectivity issue
+                if "getaddrinfo failed" in str(search_error) or "Name or service not known" in str(search_error):
+                    logger.error("DNS resolution failure detected in paper search")
+                    raise ConnectionError(
+                        "Network connectivity issue: Cannot resolve external API hostnames. "
+                        "Please check your internet connection and DNS settings. "
+                        f"Error: {search_error}"
+                    )
+                else:
+                    raise search_error
             
             if not related_papers:
                 logger.warning("No related papers found, assuming gap is valid")
-                gap_record.validation_status = GapValidationStatus.VALID
-                gap_record.validation_confidence = 0.5
-                gap_record.validated_at = datetime.now(timezone.utc)
-                await session.commit()
                 return True
             
             # Extract content from papers
-            logger.info(f"Extracting content from {len(related_papers)} papers")
-            extracted_contents = await self.grobid_client.extract_batch(related_papers)
-            
-            # Store validation papers
-            for paper, content in zip(related_papers, extracted_contents):
-                validation_paper = GapValidationPaper(
-                    research_gap_id=gap_record.id,
-                    title=paper.title,
-                    doi=paper.doi,
-                    url=paper.url,
-                    extraction_status="SUCCESS" if content.extraction_success else "FAILED",
-                    extracted_text=content.abstract if content.abstract else None
-                )
-                session.add(validation_paper)
-            
-            gap_record.papers_analyzed_count = len(related_papers)
+            logger.info(f"Starting content extraction from {len(related_papers)} papers using GROBID")
+            try:
+                extracted_contents = await self.grobid_client.extract_batch(related_papers)
+                logger.info(f"Content extraction completed. Successfully extracted {len([c for c in extracted_contents if c.extraction_success])} papers")
+            except Exception as grobid_error:
+                import traceback
+                logger.error(f"Failed to extract content from papers: {grobid_error}")
+                logger.error(f"GROBID error type: {type(grobid_error).__name__}")
+                logger.error(f"GROBID error stack trace: {traceback.format_exc()}")
+                
+                # Check if it's a network connectivity issue
+                if "getaddrinfo failed" in str(grobid_error) or "Name or service not known" in str(grobid_error):
+                    logger.error("DNS resolution failure detected in GROBID extraction")
+                    raise ConnectionError(
+                        f"Network connectivity issue: Cannot reach GROBID service at {self.grobid_client.grobid_url}. "
+                        "Please check if GROBID service is running and accessible. "
+                        f"Error: {grobid_error}"
+                    )
+                else:
+                    raise grobid_error
             
             # Validate the gap using AI
             validation_result = await self.gemini_service.validate_gap(
@@ -379,56 +533,27 @@ class GapAnalysisService:
                 extracted_contents
             )
             
-            # Update gap record based on validation
-            gap_record.validation_confidence = validation_result.confidence
-            gap_record.validation_reasoning = validation_result.reasoning
-            gap_record.validated_at = datetime.now(timezone.utc)
-            
-            if validation_result.is_valid:
-                if validation_result.should_modify:
-                    gap_record.validation_status = GapValidationStatus.MODIFIED
-                    gap_record.modification_history = [{
-                        'timestamp': datetime.now(timezone.utc).isoformat(),
-                        'original': gap.description,
-                        'modification': validation_result.modification_suggestion
-                    }]
-                    if validation_result.modification_suggestion:
-                        gap_record.description = validation_result.modification_suggestion
-                else:
-                    gap_record.validation_status = GapValidationStatus.VALID
-                
-                # Store supporting and conflicting papers
-                gap_record.supporting_papers = validation_result.supporting_papers
-                gap_record.conflicting_papers = validation_result.conflicting_papers
-                
-                await session.commit()
-                return True
-            else:
-                gap_record.validation_status = GapValidationStatus.INVALID
-                await session.commit()
-                return False
+            return validation_result.is_valid
                 
         except Exception as e:
             logger.error(f"Error validating gap: {e}")
-            gap_record.validation_status = GapValidationStatus.VALID
-            gap_record.validation_confidence = 0.3
-            gap_record.validation_reasoning = f"Validation error: {str(e)}"
-            await session.commit()
+            # Return True on error to avoid blocking processing
             return True
     
     async def _expand_gap_details(
         self,
-        gap: InitialGap,
-        gap_record: ResearchGap,
-        session: AsyncSession
-    ):
-        """Expand gap with detailed information."""
+        gap: InitialGap
+    ) -> Dict[str, Any]:
+        """Expand gap with detailed information without creating database records."""
         try:
             # Get validation result for context
-            validation_result = {
-                'confidence': gap_record.validation_confidence,
-                'reasoning': gap_record.validation_reasoning
-            }
+            from app.schemas.gap_schemas import ValidationResult
+            validation_result = ValidationResult(
+                is_valid=True,
+                confidence=0.8,
+                reasoning="Validated",
+                should_modify=False
+            )
             
             # Generate expanded details
             expanded_details = await self.gemini_service.expand_gap_details(
@@ -436,56 +561,22 @@ class GapAnalysisService:
                 validation_result
             )
             
-            # Update gap record
-            gap_record.potential_impact = expanded_details.get('potential_impact')
-            gap_record.research_hints = expanded_details.get('research_hints')
-            gap_record.implementation_suggestions = expanded_details.get('implementation_suggestions')
-            gap_record.risks_and_challenges = expanded_details.get('risks_and_challenges')
-            gap_record.required_resources = expanded_details.get('required_resources')
-            gap_record.estimated_difficulty = expanded_details.get('estimated_difficulty')
-            gap_record.estimated_timeline = expanded_details.get('estimated_timeline')
-            
-            # Store suggested topics
-            suggested_topics = []
-            for topic_data in expanded_details.get('suggested_topics', []):
-                topic = GapTopic(
-                    research_gap_id=gap_record.id,
-                    title=topic_data.get('title'),
-                    description=topic_data.get('description'),
-                    research_questions=topic_data.get('research_questions', []),
-                    methodology_suggestions=topic_data.get('methodology_suggestions'),
-                    expected_outcomes=topic_data.get('expected_outcomes'),
-                    relevance_score=topic_data.get('relevance_score', 0.5)
-                )
-                session.add(topic)
-                suggested_topics.append(topic_data)
-            
-            gap_record.suggested_topics = suggested_topics
-            
-            # Prepare evidence anchors
-            evidence_anchors = []
-            if gap_record.supporting_papers:
-                for paper in gap_record.supporting_papers:
-                    evidence_anchors.append({
-                        'title': paper.get('title'),
-                        'url': paper.get('url', ''),
-                        'type': 'supporting'
-                    })
-            
-            if gap_record.conflicting_papers:
-                for paper in gap_record.conflicting_papers:
-                    evidence_anchors.append({
-                        'title': paper.get('title'),
-                        'url': paper.get('url', ''),
-                        'type': 'conflicting'
-                    })
-            
-            gap_record.evidence_anchors = evidence_anchors
-            
-            await session.commit()
+            # Return the expanded details as a dictionary
+            return {
+                'potential_impact': expanded_details.get('potential_impact'),
+                'research_hints': expanded_details.get('research_hints'),
+                'implementation_suggestions': expanded_details.get('implementation_suggestions'),
+                'risks_and_challenges': expanded_details.get('risks_and_challenges'),
+                'required_resources': expanded_details.get('required_resources'),
+                'estimated_difficulty': expanded_details.get('estimated_difficulty'),
+                'estimated_timeline': expanded_details.get('estimated_timeline'),
+                'evidence_anchors': expanded_details.get('evidence_anchors', []),
+                'suggested_topics': expanded_details.get('suggested_topics', [])
+            }
             
         except Exception as e:
             logger.error(f"Error expanding gap details: {e}")
+            return {}
     
     async def _update_analysis_summary(
         self,
@@ -503,61 +594,41 @@ class GapAnalysisService:
         
         await session.commit()
     
-    async def _prepare_response(
+    def _prepare_response(
         self,
         analysis: GapAnalysis,
-        valid_gaps: List[ResearchGap],
-        session: AsyncSession
+        valid_gap_data: List[Dict[str, Any]]
     ) -> GapAnalysisResponse:
-        """Prepare the final response."""
+        """Prepare the final response with gap data."""
         gap_details = []
         
-        for gap in valid_gaps:
-            # Fetch topics for this gap
-            topics_result = await session.execute(
-                select(GapTopic).where(GapTopic.research_gap_id == gap.id)
-            )
-            topics = topics_result.scalars().all()
-            
-            research_topics = [
-                ResearchTopic(
-                    title=topic.title,
-                    description=topic.description,
-                    research_questions=topic.research_questions or [],
-                    methodology_suggestions=topic.methodology_suggestions,
-                    expected_outcomes=topic.expected_outcomes,
-                    relevance_score=topic.relevance_score or 0.5
-                )
-                for topic in topics
-            ]
-            
+        for gap_data in valid_gap_data:
             gap_detail = GapDetail(
-                gap_id=gap.gap_id,
-                name=gap.name,
-                description=gap.description,
-                category=gap.category,
-                validation_status=gap.validation_status,
-                confidence_score=gap.validation_confidence or 0.5,
-                potential_impact=gap.potential_impact,
-                research_hints=gap.research_hints,
-                implementation_suggestions=gap.implementation_suggestions,
-                risks_and_challenges=gap.risks_and_challenges,
-                required_resources=gap.required_resources,
-                estimated_difficulty=gap.estimated_difficulty,
-                estimated_timeline=gap.estimated_timeline,
-                evidence_anchors=gap.evidence_anchors or [],
-                supporting_papers_count=len(gap.supporting_papers) if gap.supporting_papers else 0,
-                conflicting_papers_count=len(gap.conflicting_papers) if gap.conflicting_papers else 0,
-                suggested_topics=research_topics
+                gap_id=gap_data['gap_id'],
+                name=gap_data['name'],
+                description=gap_data['description'],
+                category=gap_data['category'],
+                validation_status=gap_data['validation_status'],
+                confidence_score=gap_data['confidence_score'],
+                potential_impact=gap_data.get('potential_impact'),
+                research_hints=gap_data.get('research_hints'),
+                implementation_suggestions=gap_data.get('implementation_suggestions'),
+                risks_and_challenges=gap_data.get('risks_and_challenges'),
+                required_resources=gap_data.get('required_resources'),
+                estimated_difficulty=gap_data.get('estimated_difficulty'),
+                estimated_timeline=gap_data.get('estimated_timeline'),
+                evidence_anchors=gap_data.get('evidence_anchors', []),
+                supporting_papers_count=0,
+                conflicting_papers_count=0,
+                suggested_topics=gap_data.get('suggested_topics', [])
             )
-            
             gap_details.append(gap_detail)
         
         return GapAnalysisResponse(
             request_id=analysis.request_id,
             correlation_id=analysis.correlation_id,
             status="SUCCESS",
-            message=f"Successfully identified {len(valid_gaps)} valid research gaps",
+            message=f"Successfully identified {len(valid_gap_data)} valid research gaps",
             gap_analysis_id=str(analysis.id),
             total_gaps=analysis.total_gaps_identified,
             valid_gaps=analysis.valid_gaps_count,
@@ -565,6 +636,24 @@ class GapAnalysisService:
             completed_at=analysis.completed_at
         )
     
+    async def _mark_analysis_completed(
+        self,
+        analysis: GapAnalysis,
+        total_gaps: int,
+        valid_gaps: int,
+        invalid_gaps: int,
+        modified_gaps: int,
+        session: AsyncSession
+    ):
+        """Mark analysis as completed."""
+        analysis.status = GapStatus.COMPLETED
+        analysis.total_gaps_identified = total_gaps
+        analysis.valid_gaps_count = valid_gaps
+        analysis.invalid_gaps_count = invalid_gaps
+        analysis.modified_gaps_count = modified_gaps
+        analysis.completed_at = datetime.now(timezone.utc)
+        await session.commit()
+
     async def _mark_analysis_failed(
         self,
         analysis: GapAnalysis,

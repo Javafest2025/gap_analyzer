@@ -260,18 +260,58 @@ def format_paper_citation(
 
 def parse_json_safely(json_str: str, default: Any = None) -> Any:
     """
-    Safely parse JSON string.
+    Safely parse JSON string, handling markdown code blocks.
     
     Args:
-        json_str: JSON string
+        json_str: JSON string (may be wrapped in markdown code blocks)
         default: Default value if parsing fails
         
     Returns:
         Parsed JSON or default value
     """
     try:
+        # First try direct parsing
         return json.loads(json_str)
     except (json.JSONDecodeError, TypeError):
+        # Try to extract JSON from markdown code blocks
+        try:
+            import re
+            
+            # Look for JSON in markdown code blocks - improved pattern
+            json_pattern = r'```(?:json)?\s*\n?(.*?)\n?```'
+            matches = re.findall(json_pattern, json_str, re.DOTALL | re.IGNORECASE)
+            
+            # Also try a more flexible pattern for incomplete code blocks
+            if not matches:
+                json_pattern_flexible = r'```(?:json)?\s*\n?(.*?)(?:\n?```|$)'
+                matches = re.findall(json_pattern_flexible, json_str, re.DOTALL | re.IGNORECASE)
+            
+            if matches:
+                # Use the first match
+                json_content = matches[0].strip()
+                return json.loads(json_content)
+            
+            # If no code blocks, try to find JSON-like content
+            # Look for content between curly braces
+            brace_pattern = r'\{.*\}'
+            brace_matches = re.findall(brace_pattern, json_str, re.DOTALL)
+            
+            if brace_matches:
+                # Try the largest match (most likely to be complete JSON)
+                largest_match = max(brace_matches, key=len)
+                return json.loads(largest_match)
+            
+            # If still no luck, try to find array-like content
+            array_pattern = r'\[.*\]'
+            array_matches = re.findall(array_pattern, json_str, re.DOTALL)
+            
+            if array_matches:
+                largest_match = max(array_matches, key=len)
+                return json.loads(largest_match)
+                
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            pass
+        
         logger.warning(f"Failed to parse JSON: {json_str[:100]}...")
         return default
 

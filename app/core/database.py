@@ -33,36 +33,55 @@ class DatabaseManager:
     
     async def initialize(self):
         """Initialize database engine and session maker."""
-        try:
-            # Create engine with connection pooling
-            self._engine = create_async_engine(
-                self.database_url,
-                echo=settings.DB_ECHO,
-                pool_size=settings.DB_POOL_SIZE,
-                max_overflow=settings.DB_MAX_OVERFLOW,
-                pool_timeout=settings.DB_POOL_TIMEOUT,
-                pool_pre_ping=True,  # Verify connections before using
-                poolclass=QueuePool
-            )
-            
-            # Create session maker
-            self._sessionmaker = async_sessionmaker(
-                self._engine,
-                class_=AsyncSession,
-                expire_on_commit=False,
-                autocommit=False,
-                autoflush=False
-            )
-            
-            # Test connection
-            async with self._engine.begin() as conn:
-                await conn.execute(text("SELECT 1"))
-            
-            logger.info("Database connection initialized successfully")
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize database: {e}")
-            raise
+        import asyncio
+        max_retries = 3
+        retry_delay = 2
+        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Initializing database connection (attempt {attempt + 1}/{max_retries})")
+                
+                # Create engine with connection pooling
+                self._engine = create_async_engine(
+                    self.database_url,
+                    echo=settings.DB_ECHO,
+                    pool_size=settings.DB_POOL_SIZE,
+                    max_overflow=settings.DB_MAX_OVERFLOW,
+                    pool_timeout=settings.DB_POOL_TIMEOUT,
+                    pool_pre_ping=True,  # Verify connections before using
+                    poolclass=QueuePool,
+                    connect_args={
+                        "server_settings": {
+                            "application_name": "gap_analyzer",
+                        }
+                    }
+                )
+                
+                # Create session maker
+                self._sessionmaker = async_sessionmaker(
+                    self._engine,
+                    class_=AsyncSession,
+                    expire_on_commit=False,
+                    autocommit=False,
+                    autoflush=False
+                )
+                
+                # Test connection
+                async with self._engine.begin() as conn:
+                    await conn.execute(text("SELECT 1"))
+                
+                logger.info("Database connection initialized successfully")
+                return
+                
+            except Exception as e:
+                logger.error(f"Failed to initialize database (attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    logger.info(f"Retrying in {retry_delay} seconds...")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    logger.error("All database initialization attempts failed")
+                    raise
     
     async def close(self):
         """Close database connections."""
@@ -73,23 +92,48 @@ class DatabaseManager:
     @asynccontextmanager
     async def get_session(self) -> AsyncGenerator[AsyncSession, None]:
         """
-        Get an async database session.
+        Get an async database session with retry logic for DNS resolution failures.
         
         Yields:
             AsyncSession: Database session
         """
-        if not self._sessionmaker:
-            await self.initialize()
+        import asyncio
+        max_retries = 3
+        retry_delay = 1
         
-        async with self._sessionmaker() as session:
+        for attempt in range(max_retries):
             try:
-                yield session
-                await session.commit()
-            except Exception:
-                await session.rollback()
+                if not self._sessionmaker:
+                    await self.initialize()
+                
+                async with self._sessionmaker() as session:
+                    try:
+                        yield session
+                        await session.commit()
+                        return
+                    except Exception as e:
+                        await session.rollback()
+                        # Check if it's a DNS resolution error
+                        if "getaddrinfo failed" in str(e) or "Name or service not known" in str(e):
+                            logger.warning(f"DNS resolution error in database session (attempt {attempt + 1}/{max_retries}): {e}")
+                            if attempt < max_retries - 1:
+                                logger.info(f"Retrying database session in {retry_delay} seconds...")
+                                await asyncio.sleep(retry_delay)
+                                retry_delay *= 2
+                                continue
+                        raise
+                    finally:
+                        await session.close()
+                        
+            except Exception as e:
+                if "getaddrinfo failed" in str(e) or "Name or service not known" in str(e):
+                    logger.warning(f"DNS resolution error in database connection (attempt {attempt + 1}/{max_retries}): {e}")
+                    if attempt < max_retries - 1:
+                        logger.info(f"Retrying database connection in {retry_delay} seconds...")
+                        await asyncio.sleep(retry_delay)
+                        retry_delay *= 2
+                        continue
                 raise
-            finally:
-                await session.close()
     
     async def get_db(self) -> AsyncGenerator[AsyncSession, None]:
         """

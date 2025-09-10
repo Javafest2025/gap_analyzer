@@ -11,11 +11,15 @@ from enum import Enum
 
 class GapAnalysisRequest(BaseModel):
     """Request model for gap analysis from RabbitMQ"""
-    paper_id: str
-    paper_extraction_id: str
-    correlation_id: str
-    request_id: str
+    paperId: str
+    paperExtractionId: str
+    correlationId: str
+    requestId: str
     config: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    
+    class Config:
+        # Allow field name aliases for backward compatibility
+        populate_by_name = True
 
 
 class GapAnalysisResponse(BaseModel):
