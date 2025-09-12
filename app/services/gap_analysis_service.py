@@ -594,15 +594,57 @@ class GapAnalysisService:
         
         await session.commit()
     
+    def _transform_suggested_topics(self, suggested_topics: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Transform suggested topics to ensure proper data types for Pydantic validation."""
+        transformed_topics = []
+        
+        for i, topic in enumerate(suggested_topics):
+            transformed_topic = topic.copy()
+            
+            # Convert methodology_suggestions from list to string if needed
+            if 'methodology_suggestions' in transformed_topic:
+                methodology = transformed_topic['methodology_suggestions']
+                if isinstance(methodology, list):
+                    logger.warning(f"Topic {i}: Converting methodology_suggestions from list to string")
+                    # Join list items with newlines or semicolons
+                    transformed_topic['methodology_suggestions'] = '; '.join(str(item) for item in methodology)
+                elif methodology is None:
+                    transformed_topic['methodology_suggestions'] = None
+            
+            # Convert expected_outcomes from list to string if needed
+            if 'expected_outcomes' in transformed_topic:
+                outcomes = transformed_topic['expected_outcomes']
+                if isinstance(outcomes, list):
+                    logger.warning(f"Topic {i}: Converting expected_outcomes from list to string")
+                    # Join list items with newlines or semicolons
+                    transformed_topic['expected_outcomes'] = '; '.join(str(item) for item in outcomes)
+                elif outcomes is None:
+                    transformed_topic['expected_outcomes'] = None
+            
+            # Ensure research_questions is a list
+            if 'research_questions' in transformed_topic:
+                questions = transformed_topic['research_questions']
+                if not isinstance(questions, list):
+                    logger.warning(f"Topic {i}: Converting research_questions from {type(questions)} to list")
+                    # Convert single string to list
+                    transformed_topic['research_questions'] = [str(questions)] if questions else []
+            
+            transformed_topics.append(transformed_topic)
+        
+        return transformed_topics
+    
     def _prepare_response(
-        self,
-        analysis: GapAnalysis,
+        self, 
+        analysis: GapAnalysis, 
         valid_gap_data: List[Dict[str, Any]]
     ) -> GapAnalysisResponse:
         """Prepare the final response with gap data."""
         gap_details = []
         
         for gap_data in valid_gap_data:
+            # Transform suggested topics to ensure proper data types
+            suggested_topics = self._transform_suggested_topics(gap_data.get('suggested_topics', []))
+            
             gap_detail = GapDetail(
                 gapId=gap_data['gap_id'],
                 name=gap_data['name'],
@@ -620,7 +662,7 @@ class GapAnalysisService:
                 evidenceAnchors=gap_data.get('evidence_anchors', []),
                 supportingPapersCount=0,
                 conflictingPapersCount=0,
-                suggestedTopics=gap_data.get('suggested_topics', [])
+                suggestedTopics=suggested_topics
             )
             gap_details.append(gap_detail)
         

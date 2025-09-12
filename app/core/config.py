@@ -104,8 +104,11 @@ class Settings(BaseSettings):
     
     @property
     def rabbitmq_url(self) -> str:
-        """Construct RabbitMQ URL."""
-        return f"amqp://{self.RABBITMQ_USER}:{self.RABBITMQ_PASSWORD}@{self.RABBITMQ_HOST}:{self.RABBITMQ_PORT}/{self.RABBITMQ_VHOST}"
+        """Construct RabbitMQ URL with proper URL encoding."""
+        import urllib.parse
+        encoded_password = urllib.parse.quote(self.RABBITMQ_PASSWORD or "", safe="")
+        encoded_vhost = urllib.parse.quote(self.RABBITMQ_VHOST or "/", safe="")
+        return f"amqp://{self.RABBITMQ_USER}:{encoded_password}@{self.RABBITMQ_HOST}:{self.RABBITMQ_PORT}/{encoded_vhost}"
     
     class Config:
         env_file = ".env"

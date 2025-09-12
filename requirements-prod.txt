@@ -1,0 +1,27 @@
+# Core Framework (Production optimized)
+fastapi==0.110.0
+uvicorn[standard]==0.27.1
+python-multipart==0.0.9
+pydantic==2.6.1
+pydantic-settings==2.2.1
+
+# Database (Production)
+sqlalchemy==2.0.25
+alembic==1.13.1
+psycopg2-binary==2.9.9
+asyncpg==0.29.0
+
+# API Clients
+httpx==0.26.0
+
+# Utilities
+python-dotenv==1.0.1
+
+# Logging & Monitoring
+loguru==0.7.2
+
+# Message Queue
+aio-pika==9.3.1
+
+# AI/ML (for query refinement)
+google-generativeai==0.3.2

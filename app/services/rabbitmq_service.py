@@ -5,7 +5,7 @@ RabbitMQ service for consuming and publishing messages.
 import json
 import asyncio
 from typing import Optional, Dict, Any
-from aio_pika import connect, Message, ExchangeType, DeliveryMode
+from aio_pika import connect_robust, Message, ExchangeType, DeliveryMode
 from aio_pika.abc import AbstractIncomingMessage, AbstractConnection, AbstractChannel
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,11 +43,32 @@ class RabbitMQService:
         self.response_exchange = "gap_analysis_responses"
         self.response_routing_key = "gap.analysis.response"
     
-    async def connect(self):
-        """Connect to RabbitMQ and setup queues/exchanges."""
+    async def connect(self, retries: int = 10, delay: float = 1.0):
+        """Connect to RabbitMQ and setup queues/exchanges with retry logic."""
+        last_err = None
+        for attempt in range(1, retries + 1):
+            try:
+                # Use connect_robust with separate parameters to avoid URL encoding issues
+                from app.core.config import settings
+                self.connection = await connect_robust(
+                    host=settings.RABBITMQ_HOST,
+                    port=settings.RABBITMQ_PORT,
+                    login=settings.RABBITMQ_USER,
+                    password=settings.RABBITMQ_PASSWORD,
+                    virtualhost=settings.RABBITMQ_VHOST,  # "/" is fine here
+                )
+                logger.info(f"Successfully connected to RabbitMQ on attempt {attempt}")
+                break
+            except Exception as e:
+                last_err = e
+                logger.warning(f"RabbitMQ connect failed ({attempt}/{retries}): {e}; retrying in {delay}s")
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 15)  # Exponential backoff, max 15s
+        else:
+            logger.error(f"Exhausted retries connecting to RabbitMQ: {last_err}")
+            raise last_err
+        
         try:
-            # Connect to RabbitMQ
-            self.connection = await connect(self.rabbitmq_url)
             self.channel = await self.connection.channel()
             
             # Set prefetch count to process one message at a time
@@ -272,15 +293,9 @@ class RabbitMQService:
 
 
 def create_rabbitmq_service(settings) -> RabbitMQService:
-    """Factory function to create RabbitMQ service."""
-    import urllib.parse
-    
-    # URL encode the password to handle special characters like @
-    encoded_password = urllib.parse.quote(settings.RABBITMQ_PASSWORD, safe='')
-    rabbitmq_url = f"amqp://{settings.RABBITMQ_USER}:{encoded_password}@localhost/"
-    
+    """Factory function to create RabbitMQ service using Settings.rabbitmq_url."""
     return RabbitMQService(
-        rabbitmq_url=rabbitmq_url,
+        rabbitmq_url=settings.rabbitmq_url,
         db_url="",  # Not used anymore - we use the global db_manager
         gemini_api_key=settings.GEMINI_API_KEY,
         grobid_url=settings.GROBID_URL

@@ -193,10 +193,11 @@ async def _initialize_external_services():
     try:
         from app.services.rabbitmq_service import create_rabbitmq_service
         rabbitmq_service = create_rabbitmq_service(settings)
-        logger.info(f"RabbitMQ service initialized with URL: {settings.rabbitmq_url}")
+        logger.info(f"RabbitMQ service initialized with URL: {rabbitmq_service.rabbitmq_url}")
+        logger.info(f"RabbitMQ connection params: host={settings.RABBITMQ_HOST}, port={settings.RABBITMQ_PORT}, user={settings.RABBITMQ_USER}, vhost={settings.RABBITMQ_VHOST}")
         
-        # Test RabbitMQ connection
-        await rabbitmq_service.connect()
+        # Test RabbitMQ connection with retry logic
+        await rabbitmq_service.connect(retries=10, delay=2.0)
         logger.info("RabbitMQ service is healthy and accessible")
         
     except Exception as e:
