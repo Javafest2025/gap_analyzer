@@ -109,11 +109,11 @@ async def detailed_health_check(db: AsyncSession = Depends(get_db)):
     
     # Check Gemini API
     try:
-        if settings.GEMINI_API_KEY:
+        if settings.GA_GEMINI_API_KEY:
             health_status["checks"]["gemini"] = {
                 "status": "configured",
                 "message": "Gemini API key is configured",
-                "model": settings.GEMINI_MODEL
+                "model": settings.GA_GEMINI_MODEL
             }
         else:
             health_status["checks"]["gemini"] = {

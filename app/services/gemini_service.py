@@ -19,11 +19,11 @@ from app.core.config import settings
 class GeminiService:
     def __init__(self, api_key: str):
         genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel(settings.GEMINI_MODEL)
+        self.model = genai.GenerativeModel(settings.GA_GEMINI_MODEL)
         
         # Initialize rate limiter for Gemini API
         self.rate_limiter = RateLimiter(
-            max_calls=settings.GEMINI_RATE_LIMIT,
+            max_calls=settings.GA_GEMINI_RATE_LIMIT,
             time_window=60  # 1 minute window
         )
         

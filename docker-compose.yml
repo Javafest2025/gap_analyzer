@@ -7,7 +7,7 @@ services:
     env_file:
       - .env
     ports:
-      - "${API_PORT:-8003}:8003"
+      - "8003:8003"
     environment:
       - API_HOST=0.0.0.0
       - API_PORT=8003

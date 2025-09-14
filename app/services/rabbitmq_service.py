@@ -297,6 +297,6 @@ def create_rabbitmq_service(settings) -> RabbitMQService:
     return RabbitMQService(
         rabbitmq_url=settings.rabbitmq_url,
         db_url="",  # Not used anymore - we use the global db_manager
-        gemini_api_key=settings.GEMINI_API_KEY,
+        gemini_api_key=settings.GA_GEMINI_API_KEY,
         grobid_url=settings.GROBID_URL
     )
