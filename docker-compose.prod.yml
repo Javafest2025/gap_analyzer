@@ -4,6 +4,13 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: scholar-gap-analyzer
+
+    # 🏷️ Add metadata labels for cleanup & observability
+    labels:
+      service: "gap-analyzer"
+      maintainer: "ScholarAI <dev@scholarai.local>"
+      version: "0.0.1-SNAPSHOT"
+      description: "Gap Analyzer AI Agent for ScholarAI"
     env_file:
       - /opt/scholarai/envs/gap-analyzer.env
     ports:
