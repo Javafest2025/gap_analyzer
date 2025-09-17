@@ -1,0 +1,85 @@
+services:
+  gap-analyzer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: scholar-gap-analyzer
+
+    # 🏷️ Add metadata labels for cleanup & observability
+    labels:
+      service: "gap-analyzer"
+      maintainer: "ScholarAI <dev@scholarai.local>"
+      version: "0.0.1-SNAPSHOT"
+      description: "Gap Analyzer AI Agent for ScholarAI"
+    env_file:
+      - /opt/scholarai/envs/gap-analyzer.env
+    ports:
+      - "8003:8003"
+    environment:
+      - API_HOST=0.0.0.0
+      - API_PORT=8003
+      - DEBUG=${DEBUG:-False}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - RABBITMQ_HOST=user-rabbitmq
+      - RABBITMQ_PORT=5672
+      - DB_HOST=project-db
+      - DB_PORT=5432
+      - GROBID_URL=http://pdf_extractor_grobid:8070
+      # Memory optimization: cap native/lib threads
+      - OMP_NUM_THREADS=1
+      - MKL_NUM_THREADS=1
+      - NUMEXPR_NUM_THREADS=1
+      - OPENBLAS_NUM_THREADS=1
+      - VECLIB_MAXIMUM_THREADS=1
+      - BLAS_NUM_THREADS=1
+      - LAPACK_NUM_THREADS=1
+      # reduce glibc arena fragmentation for many threads
+      - MALLOC_ARENA_MAX=2
+      # faster logs, fewer buffers
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - scholarai-network
+    restart: unless-stopped
+    
+    # Add startup delay to allow external services to be ready
+    command: >
+      sh -c "
+        echo 'Waiting for external services...' &&
+        sleep 15 &&
+        echo 'Starting gap-analyzer service...' &&
+        uvicorn app.main:app --host 0.0.0.0 --port 8003 --workers 1 --limit-concurrency 3 --limit-max-requests 200
+      "
+
+    # —— Resource controls (Optimized for Size & Memory) ——
+    cpus: 0.5
+    cpu_shares: 256
+    mem_limit: 512m
+    mem_reservation: 256m
+    # Reduced swap limit
+    memswap_limit: 768m
+
+    # contain process count; reap zombies
+    pids_limit: 64
+    init: true
+
+    # Reduced shared memory
+    shm_size: "64m"
+
+    ulimits:
+      nofile:
+        soft: 8192
+        hard: 8192
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+networks:
+  scholarai-network:
+    external: true
+    name: docker_scholarai-network
