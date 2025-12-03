@@ -645,6 +645,18 @@ class GapAnalysisService:
             # Transform suggested topics to ensure proper data types
             suggested_topics = self._transform_suggested_topics(gap_data.get('suggested_topics', []))
             
+            # Helper function to convert complex types to strings
+            def to_string(value):
+                if value is None:
+                    return None
+                if isinstance(value, str):
+                    return value
+                if isinstance(value, list):
+                    return '\n'.join(f"- {item}" for item in value)
+                if isinstance(value, dict):
+                    return '\n'.join(f"{k}: {v}" for k, v in value.items())
+                return str(value)
+            
             gap_detail = GapDetail(
                 gapId=gap_data['gap_id'],
                 name=gap_data['name'],
@@ -654,11 +666,11 @@ class GapAnalysisService:
                 confidenceScore=gap_data['confidence_score'],
                 potentialImpact=gap_data.get('potential_impact'),
                 researchHints=gap_data.get('research_hints'),
-                implementationSuggestions=gap_data.get('implementation_suggestions'),
-                risksAndChallenges=gap_data.get('risks_and_challenges'),
-                requiredResources=gap_data.get('required_resources'),
+                implementationSuggestions=to_string(gap_data.get('implementation_suggestions')),
+                risksAndChallenges=to_string(gap_data.get('risks_and_challenges')),
+                requiredResources=to_string(gap_data.get('required_resources')),
                 estimatedDifficulty=gap_data.get('estimated_difficulty'),
-                estimatedTimeline=gap_data.get('estimated_timeline'),
+                estimatedTimeline=to_string(gap_data.get('estimated_timeline')),
                 evidenceAnchors=gap_data.get('evidence_anchors', []),
                 supportingPapersCount=0,
                 conflictingPapersCount=0,
